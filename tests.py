@@ -1,7 +1,12 @@
 import time
 from nose.tools import *
 import redis
-import redis_helpers
+from redis.helpers import unzip_list
+import threading
+
+f = open("output.txt", 'w')
+def log(data):
+    f.write("%r\n" % data)
 
 def prepare_db():
     x = redis.Redis()
@@ -10,7 +15,7 @@ def prepare_db():
     return x
 
 def prepare_dbh():
-    x = redis_helpers.RedisHelper()
+    x = redis.RedisHelper()
     x.connect()
     x.flushall()
     return x
@@ -20,6 +25,17 @@ def test_ping():
     x.connect()
     result = x.ping()
     assert(result)
+    
+class ThreadCB(threading.Thread):
+    def set_fun(self, fun):
+        self.fun = fun
+        
+    def set_cb(self, cb):
+        self.cb = cb
+    
+    def run(self):
+        result = self.fun()
+        self.cb(result)
     
 # Commands operating on all the kinds of values
 key = 'mykey'
@@ -393,8 +409,40 @@ def test_lpop_rpop():
 def test_blpop_brpop():
     db1 = prepare_db()
     db2 = prepare_db()
+    db3 = prepare_db()
+    
+    first = ThreadCB()
 
-    assert True
+    def wait_for_data():
+        return db1.blpop(key, 0)
+    first.set_fun(wait_for_data)
+
+    def on_get(data):
+        nkey, nvalue = data
+        assert nkey == key
+        assert nvalue == value
+    first.set_cb(on_get)
+        
+    second = ThreadCB()
+
+    def wait_for_data2():
+        return db2.blpop(key, 0)
+    second.set_fun(wait_for_data2)
+
+    def on_get2(data):
+        nkey, nvalue = data
+        assert nkey == key
+        assert nvalue == value2
+    second.set_cb(on_get2)
+    
+    first.start()
+    second.start()
+    
+    db3.rpush(key, value)
+    db3.rpush(key, value2)
+    
+    first.join()
+    second.join()
 
 def test_rpoplpush():
     dbh = prepare_dbh()
@@ -466,6 +514,249 @@ def test_sinterstore():
     db.sinterstore( key3, key, key2 )
     assert_equal( db.smembers(key3), [value] )
 
-def test_union():
-    pass
+def test_sunion():
+    db = prepare_db()
+    
+    db.sadd(key, value)
+    db.sadd(key, value2)
+    
+    db.sadd(key2, value)
+    db.sadd(key2, value3)
+    
+    u = db.sunion(key, key2)
+    
+    assert value in u
+    assert value2 in u
+    assert value3 in u
+    
+def test_sunion_store():
+    db = prepare_db()
+    
+    db.sadd(key, value)
+    db.sadd(key, value2)
+    
+    db.sadd(key2, value)
+    db.sadd(key2, value3)
+    
+    db.sunionstore(key3, key, key2)
 
+    u = db.smembers(key3)
+    
+    assert value in u
+    assert value2 in u
+    assert value3 in u
+
+def test_sdiff():
+    db = prepare_db()
+    
+    db.sadd(key, 'a')
+    db.sadd(key, 'b')
+    db.sadd(key, 'c')
+    db.sadd(key, 'd')
+
+    db.sadd(key2, 'a')
+    db.sadd(key3, 'c')
+    
+    result = db.sdiff(key, key2, key3)
+    
+    assert 'b' in result
+    assert 'd' in result
+    
+def test_sdiff_store():
+    db = prepare_db()
+    
+    db.sadd(key, 'a')
+    db.sadd(key, 'b')
+    db.sadd(key, 'c')
+    db.sadd(key, 'd')
+
+    db.sadd(key2, 'a')
+    db.sadd(key3, 'c')
+    
+    db.sdiffstore('storekey', key, key2, key3)
+    
+    result = db.smembers('storekey')
+    
+    assert 'b' in result
+    assert 'd' in result
+    
+def test_smembers():
+    db = prepare_db()
+    
+    db.sadd(key, value)
+    db.sadd(key, value2)
+    db.sadd(key, value3)
+    
+    d = db.smembers(key)
+    
+    assert value in d
+    assert value2 in d
+    assert value3 in d
+
+def test_srandmember():
+    db = prepare_db()
+    
+    db.sadd(key, value)
+    db.sadd(key, value2)
+    db.sadd(key, value3)
+    
+    d = db.srandmember(key)
+    
+    assert d in [value, value2, value3]
+    
+def test_zadd_zscore():
+    db = prepare_db()
+    db.zadd(key, 10.0, value)
+    result = db.zscore(key, value)
+    assert result == "10"
+    
+    result = db.zscore(key, non_existant_key)
+    assert result == None
+    
+def test_zrem_zadd():
+    db = prepare_db()
+    assert db.zadd(key, 10.0, value) == 1
+    assert db.zadd(key, 20.0, value2) == 1
+    assert db.zadd(key, 50.0, value) == 0
+    assert float(db.zscore(key, value)) == 50.0
+    
+    db.zrem(key, value)
+    
+    assert db.zscore(key, value) == None
+    assert float(db.zscore(key, value2)) == 20.0
+    
+def test_zincrby():
+    db = prepare_db()
+    
+    db.zadd(key, 10.0, value)
+    result = float(db.zincrby(key, 100.0, value))
+    assert result == 110.0
+
+def test_zrank_zrevrank():
+    db = prepare_db()
+    
+    db.zadd(key, 10.0, value)
+    db.zadd(key, 20.0, value2)
+    db.zadd(key, 30.0, value3)
+    
+    rank = db.zrank(key, value)
+    rrank = db.zrevrank(key, value)
+    
+    assert rank == 0
+    assert rrank == 2
+    
+def build_zset(db, thekey):
+    db.zadd(thekey, 10.0, 'ten')
+    db.zadd(thekey, 20.0, 'twenty')
+    db.zadd(thekey, 30.0, 'thirty')
+    db.zadd(thekey, 40.0, 'fourty')
+    db.zadd(thekey, 50.0, 'fifty')
+    
+def test_zrange_zrevrange():
+    db = prepare_db()
+    build_zset(db, key)
+    
+    result = db.zrange(key, 0, 2)
+    assert result == ['ten', 'twenty', 'thirty']
+    
+    result = db.zrange(key, 0, 2, 'WITHSCORES')
+    result = unzip_list(result, 2)
+    
+    assert result[0] == ['ten', '10']
+    assert result[1] == ['twenty', '20']
+    assert result[2] == ['thirty', '30']
+    
+def test_zrangebyscore():
+    db = prepare_db()
+    build_zset(db, key)
+    
+    result = db.zrangebyscore(key, 5.0, 25.0)
+    assert result == ['ten', 'twenty']
+    
+    result = db.zrangebyscore(key, 5.0, 25.0, 'LIMIT', 1, 1)
+    assert result == ['twenty']
+    
+    result = db.zrangebyscore(key, 5.0, 25.0, 'WITHSCORES')
+    assert unzip_list(result, 2) == [['ten', '10'], ['twenty', '20']]
+    
+    result = db.zrangebyscore(key, 5.0, 25.0, 'LIMIT', 1, 1, 'WITHSCORES')
+    assert unzip_list(result, 2) == [['twenty', '20']]
+
+def test_zremrangebyrank():
+    db = prepare_db()
+    build_zset(db, key)
+    
+    assert db.zremrangebyrank(key, 0, 1) == 2
+    result = db.zrange(key, 0, -1)
+    assert result == ['thirty', 'fourty', 'fifty']
+    
+def test_zremrangebyscore():
+    db = prepare_db()
+    build_zset(db, key)
+    
+    assert db.zremrangebyscore(key, 5.0, 25.0) == 2
+    result = db.zrange(key, 0, -1)
+    assert result == ['thirty', 'fourty', 'fifty']
+
+def test_zcard():
+    db = prepare_db()
+    build_zset(db, key)
+    assert db.zcard(key) == 5
+
+######### UNFINISHED TEST ###########
+def test_zunionstore_zinterstore():
+    db = prepare_db()
+    
+def test_hset_hget():
+    db = prepare_db()
+    assert db.hset(key, value, value2) == 1
+    assert db.hset(key, value, value3) == 0
+    
+    assert db.hget(key, value) == value3
+    assert db.hget(key, non_existant_key) == None
+    
+def test_hsetnx():
+    db = prepare_db()
+    assert db.hset(key, value, value2) == 1
+    assert db.hsetnx(key, value, value3) == 0
+    assert db.hget(key, value) == value2
+
+def test_hmset_hmget_hlen():
+    db = prepare_db()
+    db.hmset('hash', key, value, key2, value2)
+    
+    assert db.hget('hash', key) == value
+    assert db.hget('hash', key2) == value2
+    assert db.hmget('hash', key, key2) == [value, value2]
+    assert db.hlen('hash') == 2
+    
+def test_hincrby():
+    db = prepare_db()
+    db.hset('hash', key, 100)
+    
+    result = db.hincrby('hash', key, 500)
+    assert result == 600
+    assert db.hget('hash', key) == '600'
+
+def test_hexists_hdel():
+    db = prepare_db()
+    assert db.hexists('hash', key) == False
+    db.hset('hash', key, value)
+    assert db.hexists('hash', key) == True
+    db.hdel('hash', key)
+    assert db.hexists('hash', key) == False
+
+def test_hkeys_hvals():
+    db = prepare_db()
+    db.hmset('hash', key, value, key2, value2, key3, value3)
+    
+    assert db.hkeys('hash') == [key, key2, key3]
+    assert db.hvals('hash') == [value, value2, value3]
+    
+def test_hgetall():
+    db = prepare_db()
+    db.hmset('hash', key, value, key2, value2, key3, value3)
+
+    result = db.hgetall('hash')
+    assert result == [key, value, key2, value2, key3, value3]
+    assert unzip_list(result, 2) == [[key, value], [key2, value2], [key3, value3]]

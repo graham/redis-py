@@ -19,6 +19,6 @@ setup(
     keywords = 'redis k-v database',
     classifiers = [
         ],
-    py_modules = ['redis', 'redis_helpers'],
+    py_modules = ['redis.redis', 'redis.helpers'],
     platforms='any',
     )

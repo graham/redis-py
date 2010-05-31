@@ -1,7 +1,3 @@
-__version__ = 0.1
-__author__ = 'Graham Abbott'
-__email__ = 'graham@grahamalot.com'
-
 import socket
 import select
 
@@ -193,12 +189,12 @@ class Redis(object):
     # I feel like this shouldn't be in the stock redis object, but i'll leave
     # it in for now.
     def pipe(self):
-        from redis_helpers import Pipeline
+        from redis.helpers import Pipeline
         p = Pipeline(self)
         return p
     
 if __name__ == '__main__':
-    from redis_helpers import *
+    from redis.helpers import *
 
     db = Redis()
     dbh = RedisHelper()
